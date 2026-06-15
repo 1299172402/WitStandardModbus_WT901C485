@@ -1,9 +1,10 @@
 clear all;
 close all;
-instrreset;
+% instrreset;
+delete(serialportfind)
 devNo=1;                                           %根据实际串联的个数，修改该数量   Device Number
 disp('Press Ctrl+C to stop collecting data!');      %按Ctrl+C 可以终止运行
-s=serial('com3','baudrate',9600) ;fopen(s);       %Open Com Port   请将COM37换成电脑识别到的COM口，波特率9600换成传感器对应的波特率
+s=serialport('COM3',115200) ;fopen(s);       %Open Com Port   请将COM37换成电脑识别到的COM口，波特率9600换成传感器对应的波特率
 
 fid = fopen('20210812E.txt','wt'); %根据实际需求，可将文件“20210812E”的名称修改   According to actual needs, the name of the file "20210812E" can be modified
 %文件数据格式：加速度X 加速度Y 加速度Z 角速度X 角速度Y 角速度Z 角度X 角度Y 角度Z 无效0 设备ID  File Data Format: Acceleration X, Acceleration Y, Acceleration Z, Angular Velocity X, Angular Velocity Y, Angular Velocity Z, Angle X, Angle Y, Angle Z, Invalid 0, Device ID

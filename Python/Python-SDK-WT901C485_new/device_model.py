@@ -220,37 +220,37 @@ class DeviceModel:
             AccX = self.getSignInt16(self.TempBytes[3] << 8 | self.TempBytes[4]) / 32768 * 16
             AccY = self.getSignInt16(self.TempBytes[5] << 8 | self.TempBytes[6]) / 32768 * 16
             AccZ = self.getSignInt16(self.TempBytes[7] << 8 | self.TempBytes[8]) / 32768 * 16
-            self.set(ADDR, "AccX", round(AccX, 3))
-            self.set(ADDR, "AccY", round(AccY, 3))
-            self.set(ADDR, "AccZ", round(AccZ, 3))
+            self.set(ADDR, "AccX", round(AccX, 8))
+            self.set(ADDR, "AccY", round(AccY, 8))
+            self.set(ADDR, "AccZ", round(AccZ, 8))
 
             AsX = self.getSignInt16(self.TempBytes[9] << 8 | self.TempBytes[10]) / 32768 * 2000
             AsY = self.getSignInt16(self.TempBytes[11] << 8 | self.TempBytes[12]) / 32768 * 2000
             AsZ = self.getSignInt16(self.TempBytes[13] << 8 | self.TempBytes[14]) / 32768 * 2000
-            self.set(ADDR, "AsX", round(AsX, 3))
-            self.set(ADDR, "AsY", round(AsY, 3))
-            self.set(ADDR, "AsZ", round(AsZ, 3))
+            self.set(ADDR, "AsX", round(AsX, 8))
+            self.set(ADDR, "AsY", round(AsY, 8))
+            self.set(ADDR, "AsZ", round(AsZ, 8))
 
             HX = self.getSignInt16(self.TempBytes[15] << 8 | self.TempBytes[16]) * 13 / 1000
             HY = self.getSignInt16(self.TempBytes[17] << 8 | self.TempBytes[18]) * 13 / 1000
             HZ = self.getSignInt16(self.TempBytes[19] << 8 | self.TempBytes[20]) * 13 / 1000
-            self.set(ADDR, "HX", round(HX, 3))
-            self.set(ADDR, "HY", round(HY, 3))
-            self.set(ADDR, "HZ", round(HZ, 3))
+            self.set(ADDR, "HX", round(HX, 8))
+            self.set(ADDR, "HY", round(HY, 8))
+            self.set(ADDR, "HZ", round(HZ, 8))
 
             AngX = self.getSignInt16(self.TempBytes[21] << 8 | self.TempBytes[22]) / 32768 * 180
             AngY = self.getSignInt16(self.TempBytes[23] << 8 | self.TempBytes[24]) / 32768 * 180
             AngZ = self.getSignInt16(self.TempBytes[25] << 8 | self.TempBytes[26]) / 32768 * 180
-            self.set(ADDR, "AngX", round(AngX, 3))
-            self.set(ADDR, "AngY", round(AngY, 3))
-            self.set(ADDR, "AngZ", round(AngZ, 3))
+            self.set(ADDR, "AngX", round(AngX, 8))
+            self.set(ADDR, "AngY", round(AngY, 8))
+            self.set(ADDR, "AngZ", round(AngZ, 8))
             self.callback_method(self)
         else:
             if self.statReg is not None:
                 for i in range(int(length / 2)):
                     value = self.getSignInt16(self.TempBytes[2 * i + 3] << 8 | self.TempBytes[2 * i + 4])
                     value = value / 32768
-                    self.set(ADDR, str(self.statReg), round(value, 3))
+                    self.set(ADDR, str(self.statReg), round(value, 8))
                     self.statReg += 1
         self.TempBytes.clear()
 
