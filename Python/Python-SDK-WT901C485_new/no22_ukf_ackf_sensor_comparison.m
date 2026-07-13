@@ -12,6 +12,12 @@ fprintf('%s\n', repmat('=', 1, 70));
 fprintf('  传感器数据 UKF vs ACKF 滤波对比\n');
 fprintf('%s\n', repmat('=', 1, 70));
 
+%% 0. 用户可调参数 ————————————————
+t_start = 60;         % 显示起始时间 (s)  ← 在此修改
+t_end   = 75;     % 显示结束时间 (s)  ← 在此修改
+fig_width  = 1400;    % 图窗宽度 (px)
+fig_height = 900;     % 图窗高度 (px)
+
 %% 1. 读取Excel数据
 fprintf('\n[1/5] 读取Excel数据...\n');
 excel_path = 'no21_260515_1853_sensor_filter_comparison_no_true.xlsx';
@@ -276,31 +282,56 @@ end
 %% 5. 绘制对比图
 fprintf('\n[5/5] 绘制对比图...\n');
 
-% --- 图1: 6通道传感器数据滤波对比 ---
-figure('Position', [100, 100, 1400, 1000], 'Name', 'UKF vs ACKF 对比');
+% 时间范围选择
+idx_show = time >= t_start & time <= t_end;
+time_show = time(idx_show);
+
+% --- 图1: 6通道传感器数据滤波对比（紧密排列） ---
+figure('Position', [100, 100, fig_width, fig_height], ...
+       'Name', 'UKF vs ACKF 对比');
 
 sensor_labels = {'a_x (g)', 'a_y (g)', 'a_z (g)', 'm_x (\muT)', 'm_y (\muT)', 'm_z (\muT)'};
 
+% 紧密排列参数
+sub_gap_ver = 0.003;   % 垂直间距
+sub_gap_hor = 0.01;    % 水平间距
+sub_left   = 0.10;     % 左边界
+sub_right  = 0.02;     % 右边界
+sub_bottom = 0.06;     % 下边界
+sub_top    = 0.01;     % 上边界
+sub_h      = (1 - sub_bottom - sub_top - 5*sub_gap_ver) / 6;  % 每个子图高度
+sub_w      = 1 - sub_left - sub_right;                          % 宽度
+
 for i = 1:6
-    subplot(6, 1, i);
+    % 手动计算位置，从上往下排列
+    ax_pos = [sub_left, sub_bottom + (6-i)*sub_h + (6-i)*sub_gap_ver, sub_w, sub_h];
+    axes('Position', ax_pos);
     hold on; grid on; box on;
 
-    % 截取部分数据进行显示（全部数据太多，显示前2000点或全部）
-    % 显示全部
-    plot(time, raw_data(:, i), 'b-', 'LineWidth', 0.6, 'DisplayName', '原始数据');
-    plot(time, ukf_results(:, i), 'g-', 'LineWidth', 1.2, 'DisplayName', 'UKF');
-    plot(time, ackf_results(:, i), 'r-', 'LineWidth', 1.2, 'DisplayName', 'ACKF');
+    plot(time_show, raw_data(idx_show, i),  'b-', 'LineWidth', 0.5, 'DisplayName', '原始数据');
+    plot(time_show, ukf_results(idx_show, i), 'g-', 'LineWidth', 1.0, 'DisplayName', 'UKF');
+    plot(time_show, ackf_results(idx_show, i), 'r-', 'LineWidth', 1.0, 'DisplayName', 'ACKF');
 
-    ylabel(sensor_labels{i}, 'FontSize', 11, 'Interpreter', 'tex');
-    title(sprintf('%s 传感器滤波对比', upper(sensor_names{i})), 'FontSize', 12);
-    legend('Location', 'best', 'FontSize', 9);
-    xlim([time(1), time(end)]);
+    ylabel(sensor_labels{i}, 'FontSize', 9, 'Interpreter', 'tex');
+    xlim([t_start, t_end]);
+    set(gca, 'XTickLabel', []);  % 默认隐藏x轴标签
 
+    if i == 1
+        title('传感器数据 UKF vs ACKF 滤波对比', 'FontSize', 11, 'FontWeight', 'bold');
+    end
     if i == 6
-        xlabel('时间 (s)', 'FontSize', 11);
+        xlabel('时间 (s)', 'FontSize', 10);
+        set(gca, 'XTickLabelMode', 'auto');
+    end
+
+    % 只在第一个子图加图例 (放在图外右侧)
+    if i == 1
+        legend('Location', 'eastoutside', 'FontSize', 8);
     end
 end
-sgtitle('传感器数据 UKF vs ACKF 滤波对比', 'FontSize', 14, 'FontWeight', 'bold');
+
+% 导出（保持显示尺寸）
+set(gcf, 'PaperPositionMode', 'auto');
 saveas(gcf, 'no22_fig1_ukf_ackf_comparison.png');
 
 % --- 图2: RMSE/性能指标柱状图 ---
