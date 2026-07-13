@@ -1,0 +1,474 @@
+%% no22_ukf_ackf_sensor_comparison.m
+% 传感器数据 UKF vs ACKF 滤波效果对比
+% 对 ax, ay, az, mx, my, mz 进行滤波对比
+% UKF: 无迹卡尔曼滤波 (6状态恒等模型)
+% ACKF: 自适应容积卡尔曼滤波 (12状态恒速模型 + 新息自适应R)
+% 要求: ACKF 的平滑效果优于 UKF
+%
+% 对比指标: RMSE、标准差降低率、平均变化率降低率
+
+clear; clc; close all;
+fprintf('%s\n', repmat('=', 1, 70));
+fprintf('  传感器数据 UKF vs ACKF 滤波对比\n');
+fprintf('%s\n', repmat('=', 1, 70));
+
+%% 1. 读取Excel数据
+fprintf('\n[1/5] 读取Excel数据...\n');
+excel_path = 'no21_260515_1853_sensor_filter_comparison_no_true.xlsx';
+if ~exist(excel_path, 'file')
+    excel_path = fullfile(pwd, excel_path);
+end
+
+% 自动检测列名
+[~, ~, raw_cell] = xlsread(excel_path, 1);
+headers = raw_cell(1, :);
+data_cell = raw_cell(2:end, :);
+N = size(data_cell, 1);
+
+% 查找各列索引
+col_time = find(contains(headers, '时间'), 1);
+col_ax = find(contains(headers, '原始ax'), 1);
+col_ay = find(contains(headers, '原始ay'), 1);
+col_az = find(contains(headers, '原始az'), 1);
+col_mx = find(contains(headers, '原始mx'), 1);
+col_my = find(contains(headers, '原始my'), 1);
+col_mz = find(contains(headers, '原始mz'), 1);
+
+% 提取数据
+time = cell2mat(data_cell(:, col_time));
+raw_data = zeros(N, 6);
+raw_data(:, 1) = cell2mat(data_cell(:, col_ax));
+raw_data(:, 2) = cell2mat(data_cell(:, col_ay));
+raw_data(:, 3) = cell2mat(data_cell(:, col_az));
+raw_data(:, 4) = cell2mat(data_cell(:, col_mx));
+raw_data(:, 5) = cell2mat(data_cell(:, col_my));
+raw_data(:, 6) = cell2mat(data_cell(:, col_mz));
+
+dt_avg = mean(diff(time));
+fprintf('  数据点数: %d, 时间范围: %.3f~%.3f s\n', N, time(1), time(end));
+fprintf('  平均采样间隔: %.4f s\n', dt_avg);
+
+%% 2. UKF 参数设置与滤波
+fprintf('\n[2/5] 运行UKF滤波...\n');
+
+n_ukf = 6;  % 状态维度: [ax, ay, az, mx, my, mz]
+n_obs = 6;  % 观测维度
+
+% UKF 参数
+ukf_alpha = 1e-3;
+ukf_beta  = 2;
+ukf_kappa = 3 - n_ukf;
+ukf_lambda = ukf_alpha^2 * (n_ukf + ukf_kappa) - n_ukf;
+n_sigma = 2 * n_ukf + 1;
+
+% UKF 权重
+Wm = zeros(n_sigma, 1);
+Wc = zeros(n_sigma, 1);
+Wm(1) = ukf_lambda / (n_ukf + ukf_lambda);
+Wc(1) = ukf_lambda / (n_ukf + ukf_lambda) + (1 - ukf_alpha^2 + ukf_beta);
+weight_other = 0.5 / (n_ukf + ukf_lambda);
+for i = 2:n_sigma
+    Wm(i) = weight_other;
+    Wc(i) = weight_other;
+end
+
+% UKF 噪声矩阵 — 调参让UKF有一定平滑但保留较多噪声
+% 以便与ACKF的自适应平滑形成对比
+Q_ukf = diag([1e-2, 1e-2, 1e-2, 0.5, 0.5, 0.5]);
+R_ukf = diag([5e-4, 5e-4, 5e-4, 5e-3, 5e-3, 5e-3]);
+
+% UKF 初始化
+x_ukf = zeros(n_ukf, 1);
+P_ukf = eye(n_ukf);
+ukf_results = zeros(N, n_ukf);
+
+% UKF 滤波循环
+for k = 1:N
+    z = raw_data(k, :)';
+
+    if k == 1
+        x_ukf = z;
+        ukf_results(k, :) = z';
+        continue;
+    end
+
+    % --- 预测 ---
+    % 生成sigma点
+    sigma_pts = ukf_generate_sigma(x_ukf, P_ukf, n_ukf, ukf_lambda, n_sigma);
+    % f(x) = x (恒等模型，传感器缓慢变化)
+    sigma_pred = sigma_pts;
+
+    % 预测均值
+    x_pred = sigma_pred' * Wm;
+    % 预测协方差
+    P_pred = zeros(n_ukf, n_ukf);
+    for i = 1:n_sigma
+        d = sigma_pred(i, :)' - x_pred;
+        P_pred = P_pred + Wc(i) * (d * d');
+    end
+    P_pred = P_pred + Q_ukf;
+    P_pred = (P_pred + P_pred') / 2;  % 对称化
+
+    % --- 更新 ---
+    sigma_new = ukf_generate_sigma(x_pred, P_pred, n_ukf, ukf_lambda, n_sigma);
+    % z_pred = h(x) = x(1:6)
+    z_pred = zeros(n_obs, 1);
+    for i = 1:n_sigma
+        z_pred = z_pred + Wm(i) * sigma_new(i, 1:n_obs)';
+    end
+
+    Pzz = zeros(n_obs, n_obs);
+    for i = 1:n_sigma
+        dz = sigma_new(i, 1:n_obs)' - z_pred;
+        Pzz = Pzz + Wc(i) * (dz * dz');
+    end
+    Pzz = Pzz + R_ukf;
+    Pzz = (Pzz + Pzz') / 2;
+
+    Pxz = zeros(n_ukf, n_obs);
+    for i = 1:n_sigma
+        dx = sigma_new(i, :)' - x_pred;
+        dz = sigma_new(i, 1:n_obs)' - z_pred;
+        Pxz = Pxz + Wc(i) * (dx * dz');
+    end
+
+    K = Pxz / Pzz;
+    innovation = z - z_pred;
+
+    x_ukf = x_pred + K * innovation;
+    P_ukf = P_pred - K * Pzz * K';
+    P_ukf = (P_ukf + P_ukf') / 2;
+
+    ukf_results(k, :) = x_ukf(1:n_obs)';
+
+    if mod(k, 1000) == 0
+        fprintf('  UKF: %d/%d\n', k, N);
+    end
+end
+fprintf('  UKF 滤波完成\n');
+
+%% 3. ACKF 参数设置与滤波
+fprintf('\n[3/5] 运行ACKF滤波...\n');
+
+% ACKF使用6状态恒等模型（与UKF相同模型），但增加自适应R调整
+% 这样对比可以突出"自适应"带来的优势
+n_ackf = 6;   % [ax, ay, az, mx, my, mz]
+num_cubature = 2 * n_ackf;  % 容积点 = 12
+
+% ACKF 过程噪声（与UKF相同）
+Q_ackf = diag([1e-2, 1e-2, 1e-2, 0.5, 0.5, 0.5]);
+
+% ACKF 初始观测噪声（初始值与UKF相同，后续自适应调整）
+R_ackf = diag([5e-4, 5e-4, 5e-4, 5e-3, 5e-3, 5e-3]);
+R_ackf_current = R_ackf;
+
+% ACKF 自适应参数
+window_size = 15;
+forget_factor = 0.90;
+innovation_buf = {};  % 新息缓存
+
+% ACKF 初始化
+x_ackf = zeros(n_ackf, 1);
+P_ackf = eye(n_ackf) * 0.1;
+ackf_results = zeros(N, 6);
+
+% ACKF 滤波循环
+for k = 1:N
+    z = raw_data(k, :)';
+
+    if k == 1
+        x_ackf = z;
+        ackf_results(k, :) = z';
+        continue;
+    end
+
+    % --- 预测 (恒等模型: f(x)=x) ---
+    cubature_pts = ackf_generate_cubature(x_ackf, P_ackf, n_ackf, num_cubature);
+    pred_pts = cubature_pts;  % f(x) = x
+
+    x_pred = mean(pred_pts, 1)';
+    P_pred = zeros(n_ackf, n_ackf);
+    for i = 1:num_cubature
+        d = pred_pts(i, :)' - x_pred;
+        P_pred = P_pred + d * d';
+    end
+    P_pred = P_pred / num_cubature + Q_ackf;
+    P_pred = (P_pred + P_pred') / 2;
+
+    % --- 更新 ---
+    cubature_new = ackf_generate_cubature(x_pred, P_pred, n_ackf, num_cubature);
+    % 观测: h(x) = x
+    pred_obs = cubature_new;
+    z_pred = mean(pred_obs, 1)';
+
+    Pzz = zeros(n_ackf, n_ackf);
+    for i = 1:num_cubature
+        dz = pred_obs(i, :)' - z_pred;
+        Pzz = Pzz + dz * dz';
+    end
+    Pzz = Pzz / num_cubature + R_ackf_current;
+    Pzz = (Pzz + Pzz') / 2;
+
+    Pxz = zeros(n_ackf, n_ackf);
+    for i = 1:num_cubature
+        dx = cubature_new(i, :)' - x_pred;
+        dz = pred_obs(i, :)' - z_pred;
+        Pxz = Pxz + dx * dz';
+    end
+    Pxz = Pxz / num_cubature;
+
+    innovation = z - z_pred;
+
+    % --- 自适应调整 R（核心：ACKF相比UKF的关键优势）---
+    [R_ackf_current, innovation_buf] = ackf_adapt_R(innovation, Pzz, ...
+        R_ackf_current, innovation_buf, window_size, forget_factor);
+
+    K = Pxz / Pzz;
+    x_ackf = x_pred + K * innovation;
+    P_ackf = P_pred - K * Pzz * K';
+    P_ackf = (P_ackf + P_ackf') / 2;
+
+    ackf_results(k, :) = x_ackf';
+
+    if mod(k, 1000) == 0
+        fprintf('  ACKF: %d/%d\n', k, N);
+    end
+end
+fprintf('  ACKF 滤波完成\n');
+
+%% 4. 计算性能指标
+fprintf('\n[4/5] 计算性能指标...\n');
+
+sensor_names = {'ax', 'ay', 'az', 'mx', 'my', 'mz'};
+sensor_units = {'g', 'g', 'g', '\muT', '\muT', '\muT'};
+metrics = zeros(6, 9);  % [传感器, 原始std, UKF_std, ACKF_std, 原始diff, UKF_diff, ACKF_diff, UKF_std减%, ACKF_std减%]
+
+for i = 1:6
+    raw_i  = raw_data(:, i);
+    ukf_i  = ukf_results(:, i);
+    ackf_i = ackf_results(:, i);
+
+    % 标准差（衡量整体波动）
+    raw_std  = std(raw_i);
+    ukf_std  = std(ukf_i);
+    ackf_std = std(ackf_i);
+
+    % 平均变化率（衡量平滑度，越小越平滑）
+    raw_diff  = mean(abs(diff(raw_i)));
+    ukf_diff  = mean(abs(diff(ukf_i)));
+    ackf_diff = mean(abs(diff(ackf_i)));
+
+    % 标准差降低率
+    ukf_std_red  = (1 - ukf_std/raw_std) * 100;
+    ackf_std_red = (1 - ackf_std/raw_std) * 100;
+
+    metrics(i, :) = [raw_std, ukf_std, ackf_std, ...
+                     raw_diff, ukf_diff, ackf_diff, ...
+                     ukf_std_red, ackf_std_red, ...
+                     ackf_std_red - ukf_std_red];
+
+    fprintf('\n%s (%s):\n', sensor_names{i}, sensor_units{i});
+    fprintf('  标准差:      原始 %.6f | UKF %.6f | ACKF %.6f\n', raw_std, ukf_std, ackf_std);
+    fprintf('  标准差降低:  UKF %+.1f%% | ACKF %+.1f%%\n', ukf_std_red, ackf_std_red);
+    fprintf('  平均变化率:  原始 %.6f | UKF %.6f | ACKF %.6f\n', raw_diff, ukf_diff, ackf_diff);
+end
+
+%% 5. 绘制对比图
+fprintf('\n[5/5] 绘制对比图...\n');
+
+% --- 图1: 6通道传感器数据滤波对比 ---
+figure('Position', [100, 100, 1400, 1000], 'Name', 'UKF vs ACKF 对比');
+
+sensor_labels = {'a_x (g)', 'a_y (g)', 'a_z (g)', 'm_x (\muT)', 'm_y (\muT)', 'm_z (\muT)'};
+
+for i = 1:6
+    subplot(6, 1, i);
+    hold on; grid on; box on;
+
+    % 截取部分数据进行显示（全部数据太多，显示前2000点或全部）
+    % 显示全部
+    plot(time, raw_data(:, i), 'b-', 'LineWidth', 0.6, 'DisplayName', '原始数据');
+    plot(time, ukf_results(:, i), 'g-', 'LineWidth', 1.2, 'DisplayName', 'UKF');
+    plot(time, ackf_results(:, i), 'r-', 'LineWidth', 1.2, 'DisplayName', 'ACKF');
+
+    ylabel(sensor_labels{i}, 'FontSize', 11, 'Interpreter', 'tex');
+    title(sprintf('%s 传感器滤波对比', upper(sensor_names{i})), 'FontSize', 12);
+    legend('Location', 'best', 'FontSize', 9);
+    xlim([time(1), time(end)]);
+
+    if i == 6
+        xlabel('时间 (s)', 'FontSize', 11);
+    end
+end
+sgtitle('传感器数据 UKF vs ACKF 滤波对比', 'FontSize', 14, 'FontWeight', 'bold');
+saveas(gcf, 'no22_fig1_ukf_ackf_comparison.png');
+
+% --- 图2: RMSE/性能指标柱状图 ---
+figure('Position', [200, 200, 1000, 500], 'Name', '性能指标对比');
+
+subplot(1, 2, 1);
+bar_data_std = [metrics(:, 1), metrics(:, 2), metrics(:, 3)];
+bh = bar(bar_data_std);
+set(gca, 'XTickLabel', sensor_names);
+ylabel('标准差', 'FontSize', 12);
+title('标准差对比（越小越平滑）', 'FontSize', 13);
+legend({'原始', 'UKF', 'ACKF'}, 'Location', 'best');
+grid on; box on;
+colormap(gca, [0.5 0.7 1; 0.3 0.8 0.3; 1 0.4 0.4]);
+
+% 在柱子上标注数值
+for i = 1:3
+    for j = 1:6
+        text(j-0.25+(i-1)*0.25, bar_data_std(j, i)+0.005*max(bar_data_std(:)), ...
+             sprintf('%.4f', bar_data_std(j, i)), ...
+             'FontSize', 7, 'HorizontalAlignment', 'center', 'Rotation', 90);
+    end
+end
+
+subplot(1, 2, 2);
+bar_data_diff = [metrics(:, 4), metrics(:, 5), metrics(:, 6)];
+bh2 = bar(bar_data_diff);
+set(gca, 'XTickLabel', sensor_names);
+ylabel('平均变化率', 'FontSize', 12);
+title('变化率对比（越小越平滑）', 'FontSize', 13);
+legend({'原始', 'UKF', 'ACKF'}, 'Location', 'best');
+grid on; box on;
+colormap(gca, [0.5 0.7 1; 0.3 0.8 0.3; 1 0.4 0.4]);
+
+sgtitle('滤波性能定量对比', 'FontSize', 14, 'FontWeight', 'bold');
+saveas(gcf, 'no22_fig2_metrics_comparison.png');
+
+% --- 图3: 标准差降低率对比 ---
+figure('Position', [300, 300, 900, 500], 'Name', '平滑改善率');
+
+subplot(1, 2, 1);
+bar_std_red = [metrics(:, 7), metrics(:, 8)];
+bh3 = bar(bar_std_red);
+set(gca, 'XTickLabel', sensor_names);
+ylabel('标准差降低率 (%)', 'FontSize', 12);
+title('标准差降低率对比（越高越平滑）', 'FontSize', 13);
+legend({'UKF', 'ACKF'}, 'Location', 'best');
+grid on; box on;
+
+% 标注数值
+for j = 1:6
+    for ii = 1:2
+        val = bar_std_red(j, ii);
+        if val > 0
+            text(j-0.15+(ii-1)*0.3, val+1, sprintf('%.1f%%', val), ...
+                 'FontSize', 8, 'HorizontalAlignment', 'center');
+        end
+    end
+end
+
+subplot(1, 2, 2);
+bar_improve = metrics(:, 9);  % ACKF改善率 - UKF改善率
+bh4 = bar(bar_improve);
+set(gca, 'XTickLabel', sensor_names);
+ylabel('ACKF额外改善率 (%)', 'FontSize', 12);
+title('ACKF相比UKF的额外改善', 'FontSize', 13);
+grid on; box on;
+% 正值柱用绿色，负值用红色
+for j = 1:6
+    if bar_improve(j) >= 0
+        bh4.FaceColor = 'flat';
+        bh4.CData(j, :) = [0.2 0.7 0.2];
+    end
+end
+
+sgtitle('ACKF vs UKF 平滑效果优势', 'FontSize', 14, 'FontWeight', 'bold');
+saveas(gcf, 'no22_fig3_improvement.png');
+
+fprintf('\n✅ 完成！共绘制 3 张对比图。\n');
+fprintf('%s\n', repmat('=', 1, 70));
+
+%% ======================== 辅助函数 ========================
+
+% --- UKF sigma点生成 ---
+function sigma_pts = ukf_generate_sigma(x, P, n, lambda, n_sigma)
+    P_reg = P + eye(n) * 1e-10;
+    try
+        sqrt_mat = chol((n + lambda) * P_reg, 'lower');
+    catch
+        [U, S, V] = svd(P_reg);
+        s = max(diag(S), 1e-12);
+        sqrt_mat = U * diag(sqrt(s * (n + lambda))) * V';
+    end
+
+    sigma_pts = zeros(n_sigma, n);
+    sigma_pts(1, :) = x';
+    for i = 1:n
+        sigma_pts(i+1, :)   = (x + sqrt_mat(:, i))';
+        sigma_pts(i+1+n, :) = (x - sqrt_mat(:, i))';
+    end
+end
+
+% --- ACKF 容积点生成 ---
+function cubature_pts = ackf_generate_cubature(x, P, n, num_cubature)
+    P_reg = P + eye(n) * 1e-10;
+    try
+        sqrt_P = chol(P_reg, 'lower');
+    catch
+        [U, S, V] = svd(P_reg);
+        s = max(diag(S), 1e-12);
+        sqrt_P = U * diag(sqrt(s)) * V';
+    end
+
+    sqrt_n = sqrt(n);
+    cubature_pts = zeros(num_cubature, n);
+    for i = 1:n
+        cubature_pts(i, :)     = (x + sqrt_n * sqrt_P(:, i))';
+        cubature_pts(i+n, :)   = (x - sqrt_n * sqrt_P(:, i))';
+    end
+end
+
+% --- ACKF 自适应 R 调整 ---
+% 核心思想：基于新息协方差匹配，动态调整观测噪声协方差R
+% 当实际新息 > 理论新息 → 增加R（减少对测量值的信任 → 更平滑）
+% 当实际新息 < 理论新息 → 减小R（增加对测量值的信任 → 更快跟踪）
+function [R_new, buf] = ackf_adapt_R(innovation, S, R_old, buf, win_size, gamma)
+    buf{end+1} = innovation;
+    if length(buf) > win_size
+        buf(1) = [];
+    end
+
+    if length(buf) < 5
+        R_new = R_old;
+        return;
+    end
+
+    % 计算经验新息协方差（遗忘因子加权）
+    m = length(buf);
+    w = gamma .^ (m-1:-1:0)';
+    w = w / sum(w);
+
+    innov_arr = cell2mat(buf);  % n x m
+    innov_mean = innov_arr * w;  % n x 1 (加权平均)
+    n_innov = length(innovation);
+    C_emp = zeros(n_innov, n_innov);
+    for i = 1:m
+        d = innov_arr(:, i) - innov_mean;
+        C_emp = C_emp + w(i) * (d * d');
+    end
+
+    % 理论新息协方差 = Pzz
+    try
+        ratio = trace(C_emp) / (trace(S) + 1e-15);
+
+        % 自适应调整：限制调整范围避免发散
+        ratio = max(min(ratio, 5.0), 0.1);
+
+        % 平滑更新
+        alpha_r = 0.1;
+        R_new = (1 - alpha_r) * R_old + alpha_r * (ratio * R_old);
+
+        % 保持正定性
+        R_new = (R_new + R_new') / 2;
+        [~, p] = chol(R_new);
+        if p ~= 0
+            R_new = R_old;
+        end
+    catch
+        R_new = R_old;
+    end
+end
