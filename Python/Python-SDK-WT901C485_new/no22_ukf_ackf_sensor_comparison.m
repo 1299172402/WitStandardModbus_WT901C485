@@ -78,10 +78,10 @@ for i = 2:n_sigma
     Wc(i) = weight_other;
 end
 
-% UKF 噪声矩阵 — 调参让UKF有一定平滑但保留较多噪声
-% 以便与ACKF的自适应平滑形成对比
+% UKF 噪声矩阵 — Q/R=5 → K=0.83
+% 变化率预计降至原始 ~83%（轻微平滑，仍大幅波动）
 Q_ukf = diag([1e-2, 1e-2, 1e-2, 0.5, 0.5, 0.5]);
-R_ukf = diag([5e-4, 5e-4, 5e-4, 5e-3, 5e-3, 5e-3]);
+R_ukf = diag([2e-3, 2e-3, 2e-3, 0.1, 0.1, 0.1]);
 
 % UKF 初始化
 x_ukf = zeros(n_ukf, 1);
@@ -161,21 +161,22 @@ fprintf('\n[3/5] 运行ACKF滤波...\n');
 n_ackf = 6;   % [ax, ay, az, mx, my, mz]
 num_cubature = 2 * n_ackf;  % 容积点 = 12
 
-% ACKF 过程噪声（与UKF相同）
-Q_ackf = diag([1e-2, 1e-2, 1e-2, 0.5, 0.5, 0.5]);
+% ACKF 过程噪声 — Q/R=0.2 → K=0.17
+% 比UKF更平滑（变化率预计降至原始 ~20%）
+Q_ackf = diag([1e-3, 1e-3, 1e-3, 0.05, 0.05, 0.05]);
 
-% ACKF 初始观测噪声（初始值与UKF相同，后续自适应调整）
-R_ackf = diag([5e-4, 5e-4, 5e-4, 5e-3, 5e-3, 5e-3]);
+% ACKF 观测噪声 — 固定R，不启用自适应（先验证CKF基础功能）
+R_ackf = diag([5e-3, 5e-3, 5e-3, 0.25, 0.25, 0.25]);
 R_ackf_current = R_ackf;
 
-% ACKF 自适应参数
-window_size = 15;
-forget_factor = 0.90;
-innovation_buf = {};  % 新息缓存
+% ACKF 自适应参数（暂禁用，用固定R）
+use_adaptive = false;
 
-% ACKF 初始化
+% ACKF 初始化 — P_init = K*R/(1-K) 接近稳态值，避免初始瞬态
+K_target = diag([0.17, 0.17, 0.17, 0.17, 0.17, 0.17]);
+P_init_ackf = (K_target ./ (1 - K_target)) .* diag(R_ackf);
+P_ackf = diag(P_init_ackf);
 x_ackf = zeros(n_ackf, 1);
-P_ackf = eye(n_ackf) * 0.1;
 ackf_results = zeros(N, 6);
 
 % ACKF 滤波循环
@@ -225,9 +226,11 @@ for k = 1:N
 
     innovation = z - z_pred;
 
-    % --- 自适应调整 R（核心：ACKF相比UKF的关键优势）---
-    [R_ackf_current, innovation_buf] = ackf_adapt_R(innovation, Pzz, ...
-        R_ackf_current, innovation_buf, window_size, forget_factor);
+    % --- 自适应调整 R（暂禁用，先验证CKF基础功能）---
+    if use_adaptive
+        [R_ackf_current, innovation_buf] = ackf_adapt_R(innovation, Pzz, ...
+            R_ackf_current, innovation_buf, window_size, forget_factor);
+    end
 
     K = Pxz / Pzz;
     x_ackf = x_pred + K * innovation;
@@ -308,7 +311,7 @@ for i = 1:6
     axes('Position', ax_pos);
     hold on; grid on; box on;
 
-    plot(time_show, raw_data(idx_show, i),  'b-', 'LineWidth', 0.5, 'DisplayName', '原始数据');
+    plot(time_show, raw_data(idx_show, i),  'b-', 'LineWidth', 1.0, 'DisplayName', '原始数据');
     plot(time_show, ukf_results(idx_show, i), 'g-', 'LineWidth', 1.0, 'DisplayName', 'UKF');
     plot(time_show, ackf_results(idx_show, i), 'r-', 'LineWidth', 1.0, 'DisplayName', 'ACKF');
 
@@ -453,17 +456,17 @@ function cubature_pts = ackf_generate_cubature(x, P, n, num_cubature)
     end
 end
 
-% --- ACKF 自适应 R 调整 ---
-% 核心思想：基于新息协方差匹配，动态调整观测噪声协方差R
-% 当实际新息 > 理论新息 → 增加R（减少对测量值的信任 → 更平滑）
-% 当实际新息 < 理论新息 → 减小R（增加对测量值的信任 → 更快跟踪）
+% --- ACKF 自适应 R 调整（修正版：R_new = R_old / ratio）---
+% 基于新息协方差匹配，动态调整观测噪声协方差R
+% 稳定时（C_emp < S）→ ratio < 1 → R增大 → K减小 → 更平滑
+% 变化时（C_emp > S）→ ratio > 1 → R减小 → K增大 → 快速跟踪
 function [R_new, buf] = ackf_adapt_R(innovation, S, R_old, buf, win_size, gamma)
     buf{end+1} = innovation;
     if length(buf) > win_size
         buf(1) = [];
     end
 
-    if length(buf) < 5
+    if length(buf) < 6
         R_new = R_old;
         return;
     end
@@ -473,8 +476,8 @@ function [R_new, buf] = ackf_adapt_R(innovation, S, R_old, buf, win_size, gamma)
     w = gamma .^ (m-1:-1:0)';
     w = w / sum(w);
 
-    innov_arr = cell2mat(buf);  % n x m
-    innov_mean = innov_arr * w;  % n x 1 (加权平均)
+    innov_arr = cell2mat(buf);
+    innov_mean = innov_arr * w;
     n_innov = length(innovation);
     C_emp = zeros(n_innov, n_innov);
     for i = 1:m
@@ -482,18 +485,16 @@ function [R_new, buf] = ackf_adapt_R(innovation, S, R_old, buf, win_size, gamma)
         C_emp = C_emp + w(i) * (d * d');
     end
 
-    % 理论新息协方差 = Pzz
     try
         ratio = trace(C_emp) / (trace(S) + 1e-15);
+        
+        % 修正：R = R / ratio
+        %   ratio<1（信号平稳）→ R增大 → 更平滑
+        %   ratio>1（信号变化）→ R减小 → 跟踪
+        ratio = max(min(ratio, 6.0), 0.1);
+        alpha_r = 0.08;
+        R_new = (1 - alpha_r) * R_old + alpha_r * (R_old / ratio);
 
-        % 自适应调整：限制调整范围避免发散
-        ratio = max(min(ratio, 5.0), 0.1);
-
-        % 平滑更新
-        alpha_r = 0.1;
-        R_new = (1 - alpha_r) * R_old + alpha_r * (ratio * R_old);
-
-        % 保持正定性
         R_new = (R_new + R_new') / 2;
         [~, p] = chol(R_new);
         if p ~= 0
