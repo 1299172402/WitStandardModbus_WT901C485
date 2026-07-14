@@ -286,9 +286,9 @@ end
 %% 5. 绘制对比图
 fprintf('\n[5/5] 绘制对比图...\n');
 
-% 时间范围选择
+% 时间范围选择 — 绘图时 x 轴从 0 开始
 idx_show = time >= t_start & time <= t_end;
-time_show = time(idx_show);
+time_show = time(idx_show) - t_start;  % 减去起始时间，让 x 轴从 0 开始
 
 % --- 图1: 6通道传感器数据滤波对比（紧密排列） ---
 figure('Position', [100, 100, fig_width, fig_height], ...
@@ -317,7 +317,7 @@ for i = 1:6
     plot(time_show, ackf_results(idx_show, i), 'r-', 'LineWidth', 1.0, 'DisplayName', 'ACKF');
 
     ylabel(sensor_labels{i}, 'FontSize', 9, 'Interpreter', 'tex');
-    xlim([t_start, t_end]);
+    xlim([0, t_end - t_start]);
     set(gca, 'XTickLabel', []);  % 默认隐藏x轴标签
 
     if i == 1
