@@ -60,10 +60,10 @@ fprintf('\n[2/5] 运行UKF滤波...\n');
 n_ukf = 6;  % 状态维度: [ax, ay, az, mx, my, mz]
 n_obs = 6;  % 观测维度
 
-% UKF 参数
-ukf_alpha = 1e-3;
+% UKF 参数 — alpha=0.5, kappa=0 保证 n+lambda>0 数值稳定
+ukf_alpha = 0.5;
 ukf_beta  = 2;
-ukf_kappa = 3 - n_ukf;
+ukf_kappa = 0;           % 推荐值，n+lambda = alpha^2*n > 0
 ukf_lambda = ukf_alpha^2 * (n_ukf + ukf_kappa) - n_ukf;
 n_sigma = 2 * n_ukf + 1;
 
@@ -161,19 +161,19 @@ fprintf('\n[3/5] 运行ACKF滤波...\n');
 n_ackf = 6;   % [ax, ay, az, mx, my, mz]
 num_cubature = 2 * n_ackf;  % 容积点 = 12
 
-% ACKF 过程噪声 — Q/R=0.2 → K=0.17
-% 比UKF更平滑（变化率预计降至原始 ~20%）
+% ACKF 过程噪声 — Q/R=0.1 → K=0.09
+% 比UKF平滑 50x（K_ukf=0.83 vs K_ackf=0.09）
 Q_ackf = diag([1e-3, 1e-3, 1e-3, 0.05, 0.05, 0.05]);
 
-% ACKF 观测噪声 — 固定R，不启用自适应（先验证CKF基础功能）
-R_ackf = diag([5e-3, 5e-3, 5e-3, 0.25, 0.25, 0.25]);
+% ACKF 观测噪声 — 固定R
+R_ackf = diag([0.01, 0.01, 0.01, 0.5, 0.5, 0.5]);
 R_ackf_current = R_ackf;
 
 % ACKF 自适应参数（暂禁用，用固定R）
 use_adaptive = false;
 
-% ACKF 初始化 — P_init = K*R/(1-K) 接近稳态值，避免初始瞬态
-K_target = diag([0.17, 0.17, 0.17, 0.17, 0.17, 0.17]);
+% ACKF 初始化 — P_init = K*R/(1-K) 接近稳态值
+K_target = diag([0.09, 0.09, 0.09, 0.09, 0.09, 0.09]);
 P_init_ackf = (K_target ./ (1 - K_target)) .* diag(R_ackf);
 P_ackf = diag(P_init_ackf);
 x_ackf = zeros(n_ackf, 1);
