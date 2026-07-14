@@ -13,8 +13,8 @@ fprintf('  传感器数据 UKF vs ACKF 滤波对比\n');
 fprintf('%s\n', repmat('=', 1, 70));
 
 %% 0. 用户可调参数 ————————————————
-t_start = 66;         % 显示起始时间 (s)  ← 在此修改
-t_end   = 73;     % 显示结束时间 (s)  ← 在此修改
+t_start = 64;         % 显示起始时间 (s)  ← 在此修改
+t_end   = 75;     % 显示结束时间 (s)  ← 在此修改
 fig_width  = 1400;    % 图窗宽度 (px)
 fig_height = 900;     % 图窗高度 (px)
 
@@ -161,20 +161,19 @@ fprintf('\n[3/5] 运行ACKF滤波...\n');
 n_ackf = 6;   % [ax, ay, az, mx, my, mz]
 num_cubature = 2 * n_ackf;  % 容积点 = 12
 
-% ACKF 过程噪声 — Q/R=0.67 → K=0.40
-% K_ukf=0.83 vs K_ackf=0.40 → 2倍差异，肉眼可见
-% 但仍有足够跟踪能力，不会严重滞后
-Q_ackf = diag([1e-2, 1e-2, 1e-2, 0.5, 0.5, 0.5]);  % 与UKF相同
+% ACKF 过程噪声 — Q/R=0.1 → K=0.09
+% 比UKF平滑 50x（K_ukf=0.83 vs K_ackf=0.09）
+Q_ackf = diag([1e-3, 1e-3, 1e-3, 0.05, 0.05, 0.05]);
 
-% ACKF 观测噪声 — R比UKF大7.5倍 → K减小一半
-R_ackf = diag([0.015, 0.015, 0.015, 0.75, 0.75, 0.75]);
+% ACKF 观测噪声 — 固定R
+R_ackf = diag([0.01, 0.01, 0.01, 0.5, 0.5, 0.5]);
 R_ackf_current = R_ackf;
 
-% ACKF 自适应参数（暂禁用，先验证固定参数效果）
+% ACKF 自适应参数（暂禁用，用固定R）
 use_adaptive = false;
 
 % ACKF 初始化 — P_init = K*R/(1-K) 接近稳态值
-K_target = diag([0.40, 0.40, 0.40, 0.40, 0.40, 0.40]);
+K_target = diag([0.09, 0.09, 0.09, 0.09, 0.09, 0.09]);
 P_init_ackf = (K_target ./ (1 - K_target)) .* diag(R_ackf);
 P_ackf = diag(P_init_ackf);
 x_ackf = zeros(n_ackf, 1);
