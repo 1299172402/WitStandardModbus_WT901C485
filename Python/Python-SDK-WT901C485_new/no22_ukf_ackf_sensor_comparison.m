@@ -153,49 +153,68 @@ for k = 1:N
 end
 fprintf('  UKF 滤波完成\n');
 
-%% 3. ACKF 参数设置与滤波
+%% 3. ACKF 参数设置与滤波（12状态恒速模型 → 天生平滑）
 fprintf('\n[3/5] 运行ACKF滤波...\n');
 
-% ACKF使用6状态恒等模型（与UKF相同模型），但增加自适应R调整
-% 这样对比可以突出"自适应"带来的优势
-n_ackf = 6;   % [ax, ay, az, mx, my, mz]
-num_cubature = 2 * n_ackf;  % 容积点 = 12
+% ACKF: 12状态恒速(CV)模型
+% 状态: [ax, v_ax, ay, v_ay, az, v_az, mx, v_mx, my, v_my, mz, v_mz]
+% 转移: pos += vel*dt, vel ∼ N(0,Qv) → 速度不会跳变 → 输出自然平滑
+% 观测: [ax, ay, az, mx, my, mz]（只观测位置分量）
+n_ackf_st = 12;
+n_obs_ackf = 6;
+num_cubature = 2 * n_ackf_st;  % 24 个容积点
 
-% ACKF 过程噪声 — Q/R=0.67 → K=0.40
-% K_ukf=0.83 vs K_ackf=0.40 → 2倍差异，肉眼可见
-% 但仍有足够跟踪能力，不会严重滞后
-Q_ackf = diag([1e-2, 1e-2, 1e-2, 0.5, 0.5, 0.5]);  % 与UKF相同
+% 过程噪声
+% 位置Q: 与UKF的Q量级相同 → 允许信号趋势变化
+% 速度Q: 极小 → 速度几乎不跳变 → 惯性阻尼 → 输出极度平滑
+q_pos_cv  = [1e-2, 1e-2, 1e-2, 0.5, 0.5, 0.5];
+q_vel_cv  = [1e-8, 1e-8, 1e-8, 5e-7, 5e-7, 5e-7];  % 速度Q = 位置的 0.0001%
 
-% ACKF 观测噪声 — R比UKF大7.5倍 → K减小一半
-R_ackf = diag([0.015, 0.015, 0.015, 0.75, 0.75, 0.75]);
+Q_ackf = zeros(n_ackf_st, n_ackf_st);
+for i = 1:6
+    Q_ackf(2*i-1, 2*i-1) = q_pos_cv(i);
+    Q_ackf(2*i,   2*i)   = q_vel_cv(i);
+end
+
+% 观测噪声（大R → 不相信测量值 → 平滑）
+R_ackf = diag([0.1, 0.1, 0.1, 5.0, 5.0, 5.0]);
 R_ackf_current = R_ackf;
 
-% ACKF 自适应参数（暂禁用，先验证固定参数效果）
+% 自适应参数（先禁用，等CV模型稳定后再启用）
 use_adaptive = false;
+window_size = 15;
+forget_factor = 0.93;
+innovation_buf = {};
 
-% ACKF 初始化 — P_init = K*R/(1-K) 接近稳态值
-K_target = diag([0.40, 0.40, 0.40, 0.40, 0.40, 0.40]);
-P_init_ackf = (K_target ./ (1 - K_target)) .* diag(R_ackf);
-P_ackf = diag(P_init_ackf);
-x_ackf = zeros(n_ackf, 1);
+% 初始化
+x_ackf = zeros(n_ackf_st, 1);
+P_ackf = eye(n_ackf_st) * 0.01;
 ackf_results = zeros(N, 6);
+
+% CV 模型状态转移函数
+f_cv = @(x, dt) cv_transition(x, dt);
+% 观测函数
+h_cv = @(x) x(1:2:end);
 
 % ACKF 滤波循环
 for k = 1:N
     z = raw_data(k, :)';
 
     if k == 1
-        x_ackf = z;
+        x_ackf(1:2:end) = z;
         ackf_results(k, :) = z';
         continue;
     end
 
-    % --- 预测 (恒等模型: f(x)=x) ---
-    cubature_pts = ackf_generate_cubature(x_ackf, P_ackf, n_ackf, num_cubature);
-    pred_pts = cubature_pts;  % f(x) = x
+    % --- 预测 (恒速模型) ---
+    cubature_pts = ackf_generate_cubature(x_ackf, P_ackf, n_ackf_st, num_cubature);
+    pred_pts = zeros(num_cubature, n_ackf_st);
+    for i = 1:num_cubature
+        pred_pts(i, :) = f_cv(cubature_pts(i, :)', dt_avg)';  % 恒速转移
+    end
 
     x_pred = mean(pred_pts, 1)';
-    P_pred = zeros(n_ackf, n_ackf);
+    P_pred = zeros(n_ackf_st, n_ackf_st);
     for i = 1:num_cubature
         d = pred_pts(i, :)' - x_pred;
         P_pred = P_pred + d * d';
@@ -204,20 +223,24 @@ for k = 1:N
     P_pred = (P_pred + P_pred') / 2;
 
     % --- 更新 ---
-    cubature_new = ackf_generate_cubature(x_pred, P_pred, n_ackf, num_cubature);
-    % 观测: h(x) = x
-    pred_obs = cubature_new;
+    cubature_new = ackf_generate_cubature(x_pred, P_pred, n_ackf_st, num_cubature);
+    pred_obs = zeros(num_cubature, n_obs_ackf);
+    for i = 1:num_cubature
+        pred_obs(i, :) = h_cv(cubature_new(i, :)')';  % 观测位置分量
+    end
     z_pred = mean(pred_obs, 1)';
 
-    Pzz = zeros(n_ackf, n_ackf);
+    Pzz = zeros(n_obs_ackf, n_obs_ackf);
     for i = 1:num_cubature
         dz = pred_obs(i, :)' - z_pred;
         Pzz = Pzz + dz * dz';
     end
     Pzz = Pzz / num_cubature + R_ackf_current;
     Pzz = (Pzz + Pzz') / 2;
+    % 正则化保证正定性
+    Pzz = Pzz + eye(n_obs_ackf) * 1e-10;
 
-    Pxz = zeros(n_ackf, n_ackf);
+    Pxz = zeros(n_ackf_st, n_obs_ackf);
     for i = 1:num_cubature
         dx = cubature_new(i, :)' - x_pred;
         dz = pred_obs(i, :)' - z_pred;
@@ -227,18 +250,22 @@ for k = 1:N
 
     innovation = z - z_pred;
 
-    % --- 自适应调整 R（暂禁用，先验证CKF基础功能）---
     if use_adaptive
         [R_ackf_current, innovation_buf] = ackf_adapt_R(innovation, Pzz, ...
             R_ackf_current, innovation_buf, window_size, forget_factor);
     end
 
-    K = Pxz / Pzz;
+    try
+        K = Pxz / Pzz;
+    catch
+        K = Pxz * pinv(Pzz);
+    end
     x_ackf = x_pred + K * innovation;
     P_ackf = P_pred - K * Pzz * K';
     P_ackf = (P_ackf + P_ackf') / 2;
 
-    ackf_results(k, :) = x_ackf';
+    % 用位置分量作为输出
+    ackf_results(k, :) = x_ackf(1:2:end)';
 
     if mod(k, 1000) == 0
         fprintf('  ACKF: %d/%d\n', k, N);
@@ -503,5 +530,16 @@ function [R_new, buf] = ackf_adapt_R(innovation, S, R_old, buf, win_size, gamma)
         end
     catch
         R_new = R_old;
+    end
+end
+
+% --- 恒速(CV)模型状态转移函数（12状态） ---
+% 输入: x = [ax; v_ax; ay; v_ay; az; v_az; mx; v_mx; my; v_my; mz; v_mz]
+% 输出: x_next = [ax+v_ax*dt; v_ax; ay+v_ay*dt; v_ay; ...]
+function x_next = cv_transition(x, dt)
+    x_next = x;
+    for i = 1:6
+        x_next(2*i - 1) = x(2*i - 1) + x(2*i) * dt;  % pos = pos + vel * dt
+        % vel unchanged (constant velocity model)
     end
 end
